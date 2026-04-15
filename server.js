@@ -103,10 +103,10 @@ app.post("/scout", async (req, res) => {
 
     // Requêtes Google ultra-précises pour e-commerces italiens réels
     const queries = [
-      `"shop online" "${niche}" brand italiano site:.it`,
-      `"acquista" "${niche}" "made in italy" e-commerce piccolo brand`,
-      `brand italiano "${niche}" "spedizione gratuita" shop indipendente`,
-      `"negozio online" "${niche}" italia brand emergente 2022 2023 2024`
+      `brand italiani ${niche} acquista ora aggiungi al carrello shop online`,
+      `${niche} italiano spedizione gratuita reso gratuito brand emergente`,
+      `brand ${niche} made in italy pagamento alla consegna stock limitato`,
+      `${niche} italia brand piccolo seguici su instagram influencer collaborazione`
     ];
 
     let allResults = [];
