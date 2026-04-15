@@ -33,6 +33,30 @@ async function googleSearch(query) {
   }));
 }
 
+// ─── Vérifie si un domaine est accessible ──────────────────────────────────
+async function isDomainAccessible(url) {
+  try {
+    const domain = new URL(url).hostname;
+    // Filtre les domaines suspects
+    const blacklist = ['amazon', 'ebay', 'etsy', 'facebook', 'instagram', 'tiktok', 
+                       'wikipedia', 'linkedin', 'youtube', 'twitter', 'pinterest',
+                       'trustpilot', 'tripadvisor', 'yelp', 'google'];
+    if (blacklist.some(b => domain.includes(b))) return false;
+    
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const resp = await fetch(`https://${domain}`, { 
+      method: 'HEAD', 
+      signal: controller.signal,
+      redirect: 'follow'
+    });
+    clearTimeout(timeout);
+    return resp.status < 500;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Claude Haiku ───────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -66,7 +90,10 @@ function extractJSON(text) {
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
-app.get("/", (req, res) => res.json({ status: "ok", message: "Scout Backend v4 · Viral Acquisition · Google Search + Gmail" }));
+app.get("/", (req, res) => res.json({ 
+  status: "ok", 
+  message: "Scout Backend v5 · Viral Acquisition · Google Search + Gmail" 
+}));
 
 app.post("/scout", async (req, res) => {
   try {
@@ -74,10 +101,12 @@ app.post("/scout", async (req, res) => {
     if (!niche) return res.status(400).json({ error: "niche required" });
     const n = parseInt(count) || 8;
 
+    // Requêtes Google ultra-précises pour e-commerces italiens réels
     const queries = [
-      `brand italiani ${niche} e-commerce emergenti`,
-      `marchi italiani ${niche} shop online piccoli`,
-      `brand ${niche} made in italy negozio online`
+      `"shop online" "${niche}" brand italiano site:.it`,
+      `"acquista" "${niche}" "made in italy" e-commerce piccolo brand`,
+      `brand italiano "${niche}" "spedizione gratuita" shop indipendente`,
+      `"negozio online" "${niche}" italia brand emergente 2022 2023 2024`
     ];
 
     let allResults = [];
@@ -90,43 +119,75 @@ app.post("/scout", async (req, res) => {
       }
     }
 
+    // Dédoublonnage par domaine
     const seen = new Set();
     const uniqueResults = allResults.filter(r => {
       try {
         const domain = new URL(r.link).hostname;
+        // Exclure les grands sites
+        const blacklist = ['amazon', 'ebay', 'etsy', 'facebook', 'instagram', 
+                          'wikipedia', 'linkedin', 'youtube', 'google', 'pinterest',
+                          'trustpilot', 'paginegialle', 'tripadvisor'];
+        if (blacklist.some(b => domain.includes(b))) return false;
         if (seen.has(domain)) return false;
         seen.add(domain);
         return true;
       } catch { return false; }
     });
 
-    const searchContext = uniqueResults.slice(0, 20).map(r =>
+    // Vérification accessibilité (max 15 sites, parallèle)
+    console.log(`Checking ${Math.min(uniqueResults.length, 15)} domains...`);
+    const toCheck = uniqueResults.slice(0, 15);
+    const accessChecks = await Promise.all(
+      toCheck.map(async r => ({
+        ...r,
+        accessible: await isDomainAccessible(r.link)
+      }))
+    );
+    const accessibleResults = accessChecks.filter(r => r.accessible);
+    console.log(`Accessible: ${accessibleResults.length}/${toCheck.length}`);
+
+    // Fallback si pas assez de résultats accessibles
+    const finalResults = accessibleResults.length >= 3 
+      ? accessibleResults 
+      : uniqueResults.slice(0, 15);
+
+    const searchContext = finalResults.slice(0, 15).map(r =>
       `- ${r.title} | ${r.link} | ${r.snippet}`
     ).join("\n");
 
     const systemPrompt = `Sei un esperto di e-commerce italiano e influencer marketing. 
-Analizza i risultati di ricerca reali forniti e identifica i brand italiani emergenti più interessanti nella niche richiesta.
-Seleziona solo brand con sito e-commerce attivo e potenziale per influencer marketing.
-Rispondi SOLO con JSON valido, nessun testo aggiuntivo:
-{"marques":[{"nome":"...","sito":"...","instagram":"...","descrizione":"...","segnali":"...","score":8}]}`;
+Analizza i risultati di ricerca reali e identifica i brand italiani emergenti più interessanti.
+USA SOLO i brand presenti nei risultati Google forniti — non inventare brand.
+Seleziona solo brand con sito e-commerce verificato e reale.
+Rispondi SOLO con JSON valido:
+{"marques":[{"nome":"...","sito":"URL esatto dal risultato Google","instagram":"profilo dedotto dal nome","descrizione":"...","segnali":"...","score":8}]}`;
 
     const userMsg = `Niche: ${niche}
-Target follower: ${size || "5k-50k followers Instagram"}
-Numero brand da selezionare: ${n}
+Target: ${size || "5k-50k followers Instagram"}
+Numero brand: ${n}
 
-Risultati Google reali:
-${searchContext || "Nessun risultato Google disponibile, usa le tue conoscenze sui brand italiani reali."}
+Risultati Google REALI e VERIFICATI:
+${searchContext || "Nessun risultato verificato disponibile."}
 
-Seleziona i ${n} brand più promettenti. Per l'instagram, deduci il profilo dal nome del brand. Score 1-10 basato su potenziale influencer marketing.`;
+IMPORTANTE: Usa SOLO i brand dai risultati Google sopra. Non inventare. Copia il sito URL esattamente come appare nei risultati.`;
 
     const raw = await callClaude(systemPrompt, userMsg);
     const parsed = extractJSON(raw);
 
     if (!parsed || !parsed.marques || parsed.marques.length === 0) {
-      return res.status(500).json({ error: "Nessun risultato trovato. Riprova.", raw: raw.substring(0, 300) });
+      return res.status(500).json({ 
+        error: "Nessun risultato trovato. Riprova.", 
+        raw: raw.substring(0, 300) 
+      });
     }
 
-    res.json({ ...parsed, mode: "google", totalFound: uniqueResults.length });
+    res.json({ 
+      ...parsed, 
+      mode: "google", 
+      totalFound: uniqueResults.length,
+      verified: accessibleResults.length
+    });
 
   } catch (err) {
     console.error("Scout error:", err.message);
@@ -141,7 +202,7 @@ app.post("/email", async (req, res) => {
 
     let brandContext = "";
     try {
-      const results = await googleSearch(`${nome} brand italiano ${niche || ""} e-commerce`);
+      const results = await googleSearch(`"${nome}" brand italiano ${niche || ""} e-commerce contatti`);
       brandContext = results.slice(0, 5).map(r =>
         `- ${r.title} | ${r.link} | ${r.snippet}`
       ).join("\n");
@@ -152,7 +213,7 @@ app.post("/email", async (req, res) => {
     const systemPrompt = `Agente prospection Viral Acquisition, agenzia influencer marketing italiana. 
 Modello: 100% performance, zero costi anticipati per il brand.
 Rispondi SOLO con JSON valido senza markdown:
-{"analisi":"3 righe sul brand","oggetto":"oggetto email specifico e personalizzato","email":"email italiana max 120 parole personalizzata sul brand, firma: Diaz | Viral Acquisition | viralacquisition@gmail.com, NO commissioni NO percentuali, evidenzia zero rischio finanziario","score":8,"score_note":"motivazione specifica"}`;
+{"analisi":"3 righe specifiche sul brand","oggetto":"oggetto email breve e personalizzato","email":"email italiana max 100 parole, personalizzata, firma: Diaz | Viral Acquisition | viralacquisition@gmail.com, NO commissioni NO percentuali, evidenzia zero rischio finanziario, tono professionale ma diretto","score":8,"score_note":"motivazione specifica"}`;
 
     const userMsg = `Brand: ${nome}
 Sito: ${sito || "N/A"}
@@ -160,7 +221,7 @@ Instagram: ${instagram ? "@" + instagram : "N/A"}
 Descrizione: ${descrizione || ""}
 Niche: ${niche || "beauty"}
 
-Info reali trovate su Google:
+Info Google:
 ${brandContext || "Nessuna info aggiuntiva trovata."}`;
 
     const raw = await callClaude(systemPrompt, userMsg);
@@ -199,4 +260,4 @@ app.post("/send-email", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Scout Backend v4 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Scout Backend v5 running on port ${PORT}`));
