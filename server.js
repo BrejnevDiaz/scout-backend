@@ -11,7 +11,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CX = process.env.GOOGLE_CX;
 
-// ─── Nodemailer (Gmail SMTP) ────────────────────────────────────────────────
+// ─── Nodemailer ─────────────────────────────────────────────────────────────
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -20,7 +20,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ─── Google Custom Search ───────────────────────────────────────────────────
+// ─── Google Custom Search ────────────────────────────────────────────────────
 async function googleSearch(query) {
   const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=10`;
   const res = await fetch(url);
@@ -33,31 +33,7 @@ async function googleSearch(query) {
   }));
 }
 
-// ─── Vérifie si un domaine est accessible ──────────────────────────────────
-async function isDomainAccessible(url) {
-  try {
-    const domain = new URL(url).hostname;
-    // Filtre les domaines suspects
-    const blacklist = ['amazon', 'ebay', 'etsy', 'facebook', 'instagram', 'tiktok', 
-                       'wikipedia', 'linkedin', 'youtube', 'twitter', 'pinterest',
-                       'trustpilot', 'tripadvisor', 'yelp', 'google'];
-    if (blacklist.some(b => domain.includes(b))) return false;
-    
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const resp = await fetch(`https://${domain}`, { 
-      method: 'HEAD', 
-      signal: controller.signal,
-      redirect: 'follow'
-    });
-    clearTimeout(timeout);
-    return resp.status < 500;
-  } catch {
-    return false;
-  }
-}
-
-// ─── Claude Haiku ───────────────────────────────────────────────────────────
+// ─── Claude Haiku ────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -78,7 +54,7 @@ async function callClaude(systemPrompt, userMessage) {
   return (data.content || []).filter(b => b.type === "text").map(b => b.text || "").join("").trim();
 }
 
-// ─── Extract JSON ───────────────────────────────────────────────────────────
+// ─── Extract JSON ─────────────────────────────────────────────────────────────
 function extractJSON(text) {
   text = text.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
   try { return JSON.parse(text); } catch {}
@@ -89,10 +65,10 @@ function extractJSON(text) {
   return null;
 }
 
-// ─── Routes ─────────────────────────────────────────────────────────────────
-app.get("/", (req, res) => res.json({ 
-  status: "ok", 
-  message: "Scout Backend v5 · Viral Acquisition · Google Search + Gmail" 
+// ─── Routes ──────────────────────────────────────────────────────────────────
+app.get("/", (req, res) => res.json({
+  status: "ok",
+  message: "Scout Backend v5 · Viral Acquisition · Google Search + Gmail"
 }));
 
 app.post("/scout", async (req, res) => {
@@ -101,33 +77,33 @@ app.post("/scout", async (req, res) => {
     if (!niche) return res.status(400).json({ error: "niche required" });
     const n = parseInt(count) || 8;
 
-    // Requêtes Google ultra-précises pour e-commerces italiens réels
     const queries = [
-      `brand italiani ${niche} acquista ora aggiungi al carrello shop online`,
-      `${niche} italiano spedizione gratuita reso gratuito brand emergente`,
-      `brand ${niche} made in italy pagamento alla consegna stock limitato`,
-      `${niche} italia brand piccolo seguici su instagram influencer collaborazione`
+      `brand italiani ${niche} shop online`,
+      `marchio italiano ${niche} e-commerce emergente`,
+      `${niche} made in italy brand piccolo acquista`,
+      `${niche} italia brand instagram influencer`
     ];
 
     let allResults = [];
     for (const q of queries) {
       try {
         const results = await googleSearch(q);
+        console.log(`Query "${q}" → ${results.length} results`);
         allResults = allResults.concat(results);
       } catch (e) {
         console.error("Google query failed:", q, e.message);
       }
     }
 
-    // Dédoublonnage par domaine
+    // Dédoublonnage + blacklist
     const seen = new Set();
+    const blacklist = ['amazon', 'ebay', 'etsy', 'facebook', 'instagram',
+      'wikipedia', 'linkedin', 'youtube', 'google', 'pinterest',
+      'trustpilot', 'paginegialle', 'tripadvisor', 'corriere', 'repubblica'];
+
     const uniqueResults = allResults.filter(r => {
       try {
         const domain = new URL(r.link).hostname;
-        // Exclure les grands sites
-        const blacklist = ['amazon', 'ebay', 'etsy', 'facebook', 'instagram', 
-                          'wikipedia', 'linkedin', 'youtube', 'google', 'pinterest',
-                          'trustpilot', 'paginegialle', 'tripadvisor'];
         if (blacklist.some(b => domain.includes(b))) return false;
         if (seen.has(domain)) return false;
         seen.add(domain);
@@ -135,59 +111,39 @@ app.post("/scout", async (req, res) => {
       } catch { return false; }
     });
 
-    // Vérification accessibilité (max 15 sites, parallèle)
-    console.log(`Checking ${Math.min(uniqueResults.length, 15)} domains...`);
-    const toCheck = uniqueResults.slice(0, 15);
-    const accessChecks = await Promise.all(
-      toCheck.map(async r => ({
-        ...r,
-        accessible: await isDomainAccessible(r.link)
-      }))
-    );
-    const accessibleResults = accessChecks.filter(r => r.accessible);
-    console.log(`Accessible: ${accessibleResults.length}/${toCheck.length}`);
+    console.log(`Total unique results: ${uniqueResults.length}`);
 
-    // Fallback si pas assez de résultats accessibles
-    const finalResults = accessibleResults.length >= 3 
-      ? accessibleResults 
-      : uniqueResults.slice(0, 15);
-
-    const searchContext = finalResults.slice(0, 15).map(r =>
+    const searchContext = uniqueResults.slice(0, 20).map(r =>
       `- ${r.title} | ${r.link} | ${r.snippet}`
     ).join("\n");
 
-    const systemPrompt = `Sei un esperto di e-commerce italiano e influencer marketing. 
-Analizza i risultati di ricerca reali e identifica i brand italiani emergenti più interessanti.
-USA SOLO i brand presenti nei risultati Google forniti — non inventare brand.
-Seleziona solo brand con sito e-commerce verificato e reale.
-Rispondi SOLO con JSON valido:
-{"marques":[{"nome":"...","sito":"URL esatto dal risultato Google","instagram":"profilo dedotto dal nome","descrizione":"...","segnali":"...","score":8}]}`;
+    const systemPrompt = `Sei un esperto di e-commerce italiano e influencer marketing.
+Analizza i risultati di ricerca forniti e identifica brand italiani emergenti interessanti.
+Se i risultati non contengono brand adatti, usa le tue conoscenze sui brand italiani reali nella niche richiesta.
+Rispondi SOLO con JSON valido, nessun testo aggiuntivo:
+{"marques":[{"nome":"...","sito":"dominio.it","instagram":"handle","descrizione":"...","segnali":"...","score":8}]}`;
 
     const userMsg = `Niche: ${niche}
 Target: ${size || "5k-50k followers Instagram"}
 Numero brand: ${n}
 
-Risultati Google REALI e VERIFICATI:
-${searchContext || "Nessun risultato verificato disponibile."}
+Risultati Google:
+${searchContext || "Nessun risultato Google disponibile."}
 
-IMPORTANTE: Usa SOLO i brand dai risultati Google sopra. Non inventare. Copia il sito URL esattamente come appare nei risultati.`;
+Seleziona ${n} brand italiani reali e emergenti nella niche ${niche}. Usa i risultati Google se disponibili, altrimenti usa le tue conoscenze sui brand italiani reali.`;
 
     const raw = await callClaude(systemPrompt, userMsg);
-    const parsed = extractJSON(raw);
+    console.log("Claude raw:", raw.substring(0, 200));
 
+    const parsed = extractJSON(raw);
     if (!parsed || !parsed.marques || parsed.marques.length === 0) {
-      return res.status(500).json({ 
-        error: "Nessun risultato trovato. Riprova.", 
-        raw: raw.substring(0, 300) 
+      return res.status(500).json({
+        error: "Nessun risultato trovato. Riprova.",
+        raw: raw.substring(0, 300)
       });
     }
 
-    res.json({ 
-      ...parsed, 
-      mode: "google", 
-      totalFound: uniqueResults.length,
-      verified: accessibleResults.length
-    });
+    res.json({ ...parsed, mode: "google", totalFound: uniqueResults.length });
 
   } catch (err) {
     console.error("Scout error:", err.message);
@@ -202,7 +158,7 @@ app.post("/email", async (req, res) => {
 
     let brandContext = "";
     try {
-      const results = await googleSearch(`"${nome}" brand italiano ${niche || ""} e-commerce contatti`);
+      const results = await googleSearch(`${nome} brand italiano ${niche || ""} e-commerce`);
       brandContext = results.slice(0, 5).map(r =>
         `- ${r.title} | ${r.link} | ${r.snippet}`
       ).join("\n");
@@ -210,10 +166,10 @@ app.post("/email", async (req, res) => {
       console.error("Google brand search failed:", e.message);
     }
 
-    const systemPrompt = `Agente prospection Viral Acquisition, agenzia influencer marketing italiana. 
+    const systemPrompt = `Agente prospection Viral Acquisition, agenzia influencer marketing italiana.
 Modello: 100% performance, zero costi anticipati per il brand.
 Rispondi SOLO con JSON valido senza markdown:
-{"analisi":"3 righe specifiche sul brand","oggetto":"oggetto email breve e personalizzato","email":"email italiana max 100 parole, personalizzata, firma: Diaz | Viral Acquisition | viralacquisition@gmail.com, NO commissioni NO percentuali, evidenzia zero rischio finanziario, tono professionale ma diretto","score":8,"score_note":"motivazione specifica"}`;
+{"analisi":"3 righe specifiche sul brand","oggetto":"oggetto email breve e personalizzato","email":"email italiana max 100 parole, personalizzata, firma: Diaz | Viral Acquisition | viralacquisition@gmail.com, NO commissioni NO percentuali, evidenzia zero rischio finanziario","score":8,"score_note":"motivazione specifica"}`;
 
     const userMsg = `Brand: ${nome}
 Sito: ${sito || "N/A"}
@@ -236,23 +192,20 @@ ${brandContext || "Nessuna info aggiuntiva trovata."}`;
   }
 });
 
-// ─── Send Email via Gmail ────────────────────────────────────────────────────
+// ─── Send Email ───────────────────────────────────────────────────────────────
 app.post("/send-email", async (req, res) => {
   try {
     const { to, oggetto, email } = req.body;
     if (!to || !oggetto || !email) {
       return res.status(400).json({ error: "to, oggetto, email required" });
     }
-
     await transporter.sendMail({
       from: `"Diaz · Viral Acquisition" <${process.env.GMAIL_USER}>`,
       to,
       subject: oggetto,
       text: email
     });
-
     res.json({ success: true, message: `Email inviata a ${to}` });
-
   } catch (err) {
     console.error("Send email error:", err.message);
     res.status(500).json({ error: err.message });
