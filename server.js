@@ -11,7 +11,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CX = process.env.GOOGLE_CX;
 
-// ─── Nodemailer ─────────────────────────────────────────────────────────────
+// ─── Nodemailer ──────────────────────────────────────────────────────────────
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -20,7 +20,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ─── Google Custom Search ────────────────────────────────────────────────────
+// ─── Google Custom Search ─────────────────────────────────────────────────────
 async function googleSearch(query) {
   const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=10`;
   const res = await fetch(url);
@@ -33,7 +33,7 @@ async function googleSearch(query) {
   }));
 }
 
-// ─── Claude Haiku ────────────────────────────────────────────────────────────
+// ─── Claude Haiku ─────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -65,7 +65,10 @@ function extractJSON(text) {
   return null;
 }
 
-// ─── Routes ──────────────────────────────────────────────────────────────────
+// ─── Sleep helper ─────────────────────────────────────────────────────────────
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({
   status: "ok",
   message: "Scout Backend v5 · Viral Acquisition · Google Search + Gmail"
@@ -77,29 +80,39 @@ app.post("/scout", async (req, res) => {
     if (!niche) return res.status(400).json({ error: "niche required" });
     const n = parseInt(count) || 8;
 
+    // 6 requêtes Google variées pour maximiser les résultats réels
     const queries = [
       `brand italiani ${niche} shop online`,
-      `marchio italiano ${niche} e-commerce emergente`,
-      `${niche} made in italy brand piccolo acquista`,
-      `${niche} italia brand instagram influencer`
+      `marchio italiano ${niche} e-commerce`,
+      `${niche} made in italy negozio online`,
+      `${niche} brand italiano piccolo instagram`,
+      `azienda italiana ${niche} vendita online`,
+      `startup italiana ${niche} ecommerce`
     ];
 
     let allResults = [];
+
+    // On attend entre chaque requête pour avoir plus de résultats
     for (const q of queries) {
       try {
         const results = await googleSearch(q);
         console.log(`Query "${q}" → ${results.length} results`);
         allResults = allResults.concat(results);
+        await sleep(500); // pause entre requêtes
       } catch (e) {
         console.error("Google query failed:", q, e.message);
       }
     }
 
-    // Dédoublonnage + blacklist
+    // Dédoublonnage strict + blacklist
     const seen = new Set();
-    const blacklist = ['amazon', 'ebay', 'etsy', 'facebook', 'instagram',
+    const blacklist = [
+      'amazon', 'ebay', 'etsy', 'facebook', 'instagram', 'tiktok',
       'wikipedia', 'linkedin', 'youtube', 'google', 'pinterest',
-      'trustpilot', 'paginegialle', 'tripadvisor', 'corriere', 'repubblica'];
+      'trustpilot', 'paginegialle', 'tripadvisor', 'corriere',
+      'repubblica', 'sole24ore', 'ilsole', 'wired', 'forbes',
+      'businessinsider', 'shopify', 'woocommerce', 'prestashop'
+    ];
 
     const uniqueResults = allResults.filter(r => {
       try {
@@ -111,34 +124,45 @@ app.post("/scout", async (req, res) => {
       } catch { return false; }
     });
 
-    console.log(`Total unique results: ${uniqueResults.length}`);
+    console.log(`Total unique results after filter: ${uniqueResults.length}`);
 
-    const searchContext = uniqueResults.slice(0, 20).map(r =>
-      `- ${r.title} | ${r.link} | ${r.snippet}`
+    if (uniqueResults.length === 0) {
+      return res.status(500).json({ error: "Nessun risultato Google trovato. Riprova tra qualche minuto." });
+    }
+
+    // Passe tous les résultats à Claude — il choisit les meilleurs
+    const searchContext = uniqueResults.slice(0, 30).map((r, i) =>
+      `[${i+1}] NOME: ${r.title} | URL: ${r.link} | INFO: ${r.snippet}`
     ).join("\n");
 
     const systemPrompt = `Sei un esperto di e-commerce italiano e influencer marketing.
-Analizza i risultati di ricerca forniti e identifica brand italiani emergenti interessanti.
-Se i risultati non contengono brand adatti, usa le tue conoscenze sui brand italiani reali nella niche richiesta.
-Rispondi SOLO con JSON valido, nessun testo aggiuntivo:
-{"marques":[{"nome":"...","sito":"dominio.it","instagram":"handle","descrizione":"...","segnali":"...","score":8}]}`;
+Analizza questa lista di siti web italiani trovati su Google e seleziona i brand e-commerce più interessanti.
 
-    const userMsg = `Niche: ${niche}
-Target: ${size || "5k-50k followers Instagram"}
-Numero brand: ${n}
+REGOLE ASSOLUTE:
+1. Usa SOLO i siti presenti nella lista — NON inventare mai URL o nomi
+2. Il campo "sito" deve essere ESATTAMENTE l'URL dalla lista (es: www.nomebrand.it)
+3. Se un risultato non è un brand e-commerce, IGNORALO
+4. Seleziona solo brand con potenziale per influencer marketing
 
-Risultati Google:
-${searchContext || "Nessun risultato Google disponibile."}
+Rispondi SOLO con JSON valido:
+{"marques":[{"nome":"Nome Brand","sito":"url-esatto-dalla-lista.it","instagram":"handle_dedotto","descrizione":"descrizione specifica","segnali":"segnali crescita","score":8}]}`;
 
-Seleziona ${n} brand italiani reali e emergenti nella niche ${niche}. Usa i risultati Google se disponibili, altrimenti usa le tue conoscenze sui brand italiani reali.`;
+    const userMsg = `Niche cercata: ${niche}
+Target follower: ${size || "5k-50k followers Instagram"}
+Numero brand da selezionare: ${n}
+
+Lista siti trovati su Google (usa SOLO questi):
+${searchContext}
+
+Seleziona i ${n} migliori brand e-commerce italiani nella niche "${niche}". Copia gli URL ESATTAMENTE come appaiono nella lista.`;
 
     const raw = await callClaude(systemPrompt, userMsg);
-    console.log("Claude raw:", raw.substring(0, 200));
+    console.log("Claude raw:", raw.substring(0, 300));
 
     const parsed = extractJSON(raw);
     if (!parsed || !parsed.marques || parsed.marques.length === 0) {
       return res.status(500).json({
-        error: "Nessun risultato trovato. Riprova.",
+        error: "Nessun brand trovato nei risultati. Riprova.",
         raw: raw.substring(0, 300)
       });
     }
